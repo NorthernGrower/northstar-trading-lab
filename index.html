@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0e13">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://data-api.binance.vision https://api.kraken.com; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <title>Northstar — Trading Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/local-simulator.js" defer></script>
+  <script src="/kraken-bot.js" defer></script>
+  <script src="/app.js" defer></script>
+  <script src="/kraken-ui.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#paper" aria-label="Northstar Trading Lab home">
+        <span class="brand-mark">N</span>
+        <span class="brand-copy"><strong>NORTHSTAR</strong><small>TRADING LAB</small></span>
+      </a>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="mode-nav" aria-label="Trading mode">
+        <button class="nav-item active" data-mode="paper" aria-current="page">
+          <span class="nav-icon">◌</span><span>Paper trading</span><span class="nav-pill">SIM</span>
+        </button>
+        <button class="nav-item" data-mode="live">
+          <span class="nav-icon">⌁</span><span>Live trading</span><span class="lock-mark">LOCKED</span>
+        </button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="connection-card">
+        <span class="connection-dot"></span>
+        <div><strong>Market data</strong><small id="sidebar-data-status">Connecting…</small></div>
+      </div>
+      <div class="sidebar-footer"><span class="status-dot"></span>LOCAL SIMULATION <span>v0.1</span></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumb"><span>WORKSPACE</span><i>/</i><strong id="breadcrumb-mode">PAPER TRADING</strong></div>
+        <div class="topbar-right">
+          <span id="runtime-mode" class="runtime-chip">SERVER MODE</span>
+          <span class="data-chip"><span class="pulse-dot" id="header-data-dot"></span><span id="header-data-status">Connecting to market</span></span>
+          <span class="avatar">NL</span>
+        </div>
+      </header>
+
+      <section id="paper-view" class="view active" aria-labelledby="paper-title">
+        <div class="page-heading">
+          <div>
+            <div class="eyebrow"><span class="live-indicator"></span>SIMULATION ENVIRONMENT</div>
+            <h1 id="paper-title">Paper trading</h1>
+            <p>Test execution and risk settings against public market quotes. Every order here is simulated.</p>
+          </div>
+          <div class="heading-actions">
+            <label class="symbol-select-label" for="symbol-select">MARKET</label>
+            <select id="symbol-select" aria-label="Select a USDT market">
+              <option value="BTCUSDT">BTC / USDT</option>
+              <option value="ETHUSDT">ETH / USDT</option>
+              <option value="SOLUSDT">SOL / USDT</option>
+              <option value="BNBUSDT">BNB / USDT</option>
+            </select>
+            <button class="button button-quiet" id="kill-switch">Enable kill switch</button>
+            <button class="button button-quiet" id="reset-account">Reset account</button>
+          </div>
+        </div>
+
+        <div id="paper-alert" class="alert-banner hidden" role="status"></div>
+
+        <div class="summary-grid">
+          <article class="metric-card metric-primary">
+            <div class="metric-label">PAPER EQUITY <span class="metric-icon">↗</span></div>
+            <div class="metric-value" id="equity-value">—</div>
+            <div class="metric-foot"><span class="metric-note" id="cash-value">Available cash —</span><span class="sim-tag">SIMULATED</span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-label">TODAY’S P&L</div>
+            <div class="metric-value" id="daily-pnl">—</div>
+            <div class="metric-foot"><span class="metric-note" id="daily-pnl-pct">UTC day · unrealized included</span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-label">OPEN RISK</div>
+            <div class="metric-value" id="open-risk">—</div>
+            <div class="metric-foot"><span class="metric-note" id="risk-cap">Risk cap 2% per position</span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-label">MAX DRAWDOWN</div>
+            <div class="metric-value" id="drawdown-value">—</div>
+            <div class="metric-foot"><span class="metric-note" id="drawdown-cap">Limit 15%</span></div>
+          </article>
+        </div>
+
+        <div class="market-layout">
+          <section class="panel chart-panel" aria-label="Market price chart">
+            <div class="panel-header chart-header">
+              <div><div class="panel-title">Market overview</div><div class="panel-subtitle" id="chart-subtitle">BTC / USDT · 1 minute</div></div>
+              <div class="chart-price-wrap"><strong id="market-price">—</strong><span id="market-change" class="change-pill">—</span></div>
+            </div>
+            <div class="chart-stats">
+              <div><span>BEST BID</span><strong id="best-bid">—</strong></div>
+              <div><span>BEST ASK</span><strong id="best-ask">—</strong></div>
+              <div><span>SPREAD</span><strong id="spread-value">—</strong></div>
+              <div><span>24H VOLUME</span><strong id="volume-value">—</strong></div>
+            </div>
+            <div class="chart-wrap"><canvas id="price-chart" aria-label="One-minute historical prices" role="img"></canvas><div id="chart-empty" class="chart-empty hidden">Historical candles unavailable</div></div>
+            <div class="chart-footer"><span><i class="legend-dot"></i>PUBLIC SPOT PRICE · 1M</span><span id="last-updated">Waiting for quote</span></div>
+          </section>
+
+          <section class="panel order-panel" aria-labelledby="order-title">
+            <div class="panel-header order-header"><div><div class="panel-title" id="order-title">Paper order</div><div class="panel-subtitle">No exchange orders are sent</div></div><span class="order-sim-badge">SIM</span></div>
+            <div class="side-toggle" role="group" aria-label="Order side">
+              <button class="side-button buy selected" data-side="BUY">Buy</button>
+              <button class="side-button sell" data-side="SELL">Sell</button>
+            </div>
+            <label class="field-label" for="order-type">ORDER TYPE</label>
+            <select id="order-type" class="field-control">
+              <option value="MARKET">Market</option>
+              <option value="LIMIT">Limit</option>
+              <option value="STOP_MARKET">Stop market</option>
+            </select>
+            <label class="field-label" for="quantity-input">QUANTITY <span id="quantity-unit">BTC</span></label>
+            <div class="input-wrap"><input id="quantity-input" class="field-control" type="number" min="0" step="any" placeholder="0.001"><span id="quantity-hint">Base asset</span></div>
+            <div id="limit-field" class="conditional-field hidden"><label class="field-label" for="limit-price-input">LIMIT PRICE <span>USDT</span></label><input id="limit-price-input" class="field-control" type="number" min="0" step="any" placeholder="Price"></div>
+            <div id="trigger-field" class="conditional-field hidden"><label class="field-label" for="trigger-price-input">TRIGGER PRICE <span>USDT</span></label><input id="trigger-price-input" class="field-control" type="number" min="0" step="any" placeholder="Price"></div>
+            <div id="stop-field"><label class="field-label" for="stop-price-input">PROTECTIVE STOP LOSS <span>USDT · REQUIRED FOR BUYS</span></label><input id="stop-price-input" class="field-control" type="number" min="0" step="any" placeholder="Below entry price"></div>
+            <div class="order-estimate"><span>Estimated notional</span><strong id="notional-estimate">—</strong></div>
+            <button id="submit-order" class="button button-buy">Place simulated buy</button>
+            <div class="execution-note"><span class="note-icon">i</span><span>Arrival delay precedes execution. Fills use live bid/ask, top-level liquidity, fees and slippage. Market remainders may be partial or cancelled.</span></div>
+          </section>
+        </div>
+
+        <section class="panel research-panel" aria-labelledby="research-title">
+          <div class="panel-header"><div><div class="panel-title" id="research-title">Market regime & research</div><div class="panel-subtitle">Descriptive indicators from recent public 1-minute candles · not an order signal</div></div><span class="research-state">RULE-BASED · NO MODEL CONNECTED</span></div>
+          <div class="research-grid">
+            <div><span>SHORT-TERM REGIME</span><strong id="regime-value">Waiting for candle history</strong><small id="regime-detail">No prediction is generated</small></div>
+            <div><span>RSI · 14 PERIOD</span><strong id="rsi-value">—</strong><small>Relative strength, 1 minute</small></div>
+            <div><span>SMA · 20 PERIOD</span><strong id="sma-value">—</strong><small id="sma-detail">USDT simple moving average</small></div>
+            <div><span>RESEARCH CONNECTOR</span><strong class="research-offline">Not connected</strong><small>External AI and sentiment services are not configured</small></div>
+          </div>
+        </section>
+
+        <section class="panel kraken-panel" aria-labelledby="kraken-title">
+          <div class="panel-header kraken-header">
+            <div><div class="panel-title" id="kraken-title">Kraken market scanner & paper bot</div><div class="panel-subtitle">All online spot pairs scanned · automatic paper entries only on USD/USDT pairs</div></div>
+            <span class="kraken-mode-badge">PAPER ONLY · NO LIVE ORDERS</span>
+          </div>
+          <div class="kraken-disclaimer">Compares EMA/RSI trend, Donchian breakout, MACD crossover, and Elliott-inspired swing/Fibonacci pullback rules on 1m or 5m candles, with ATR stops. Early candles warm up indicators; the final 30% holdout ranks rules and markets, which can itself overfit. Kraken OHLC is capped at 720 candles (12h at 1m, 60h at 5m). Costs are estimates; TradingView is not connected and profit is not guaranteed. Bot runs only while this dashboard is open.</div>
+          <div class="kraken-controls">
+            <button id="kraken-scan" class="button button-quiet">Scan Kraken markets</button>
+            <button id="kraken-backtest" class="button button-quiet">Backtest all USD/USDT pairs</button>
+            <button id="kraken-backtest-cancel" class="button button-quiet hidden">Cancel backtest</button>
+            <button id="kraken-bot-toggle" class="button button-buy">Start paper bot</button>
+            <button id="kraken-reset" class="button button-quiet">Reset bot account</button>
+          </div>
+          <div id="kraken-status" class="kraken-status">Ready to scan Kraken public spot markets.</div>
+          <div class="kraken-progress-wrap hidden" id="kraken-progress-wrap"><div class="kraken-progress"><span id="kraken-progress-bar"></span></div><small id="kraken-progress-label"></small></div>
+          <div id="kraken-alert" class="alert-banner hidden" role="status"></div>
+          <div class="kraken-metrics">
+            <div><span>SPOT PAIRS DISCOVERED</span><strong id="kraken-market-count">—</strong></div>
+            <div><span>USD/USDT AUTO-TRADE ELIGIBLE</span><strong id="kraken-eligible-count">—</strong></div>
+            <div><span>BACKTESTED PAIRS</span><strong id="kraken-backtest-count">—</strong></div>
+            <div><span>PASSING HOLDOUT FILTERS</span><strong id="kraken-qualified-count">—</strong></div>
+            <div><span>BOT PAPER EQUITY</span><strong id="kraken-equity">—</strong></div>
+            <div><span>TODAY’S BOT P&L</span><strong id="kraken-daily-pnl">—</strong></div>
+            <div><span>BOT DRAWDOWN</span><strong id="kraken-drawdown">—</strong></div>
+          </div>
+          <form id="kraken-settings-form" class="kraken-settings">
+            <label><span>Estimated fee / side</span><div class="setting-input"><input name="feeBps" type="number" min="0" max="100" step="0.5"><em>bps</em></div></label>
+            <label><span>Assumed historical spread</span><div class="setting-input"><input name="assumedSpreadBps" type="number" min="0" max="200" step="1"><em>bps</em></div></label>
+            <label><span>Slippage / side</span><div class="setting-input"><input name="slippageBps" type="number" min="0" max="100" step="1"><em>bps</em></div></label>
+            <label><span>Risk per position</span><div class="setting-input"><input name="riskPct" type="number" min="0.1" max="2" step="0.1"><em>%</em></div></label>
+            <label><span>Daily loss limit</span><div class="setting-input"><input name="dailyLossLimitPct" type="number" min="0.5" max="20" step="0.5"><em>%</em></div></label>
+            <label><span>Max drawdown</span><div class="setting-input"><input name="maxDrawdownPct" type="number" min="1" max="40" step="1"><em>%</em></div></label>
+            <label><span>Maximum open positions</span><div class="setting-input"><input name="maxPositions" type="number" min="1" max="10" step="1"><em>pairs</em></div></label>
+            <label><span>Maximum spread to enter</span><div class="setting-input"><input name="maxSpreadBps" type="number" min="1" max="200" step="1"><em>bps</em></div></label>
+            <label><span>Minimum 24h volume</span><div class="setting-input"><input name="minVolumeUsd" type="number" min="0" max="1000000000" step="10000"><em>USD eq</em></div></label>
+            <label><span>Scalping candle interval</span><div class="setting-input"><select name="intervalMinutes"><option value="1">1 minute</option><option value="5">5 minutes</option></select></div></label>
+            <label><span>Auto-scan candidate count</span><div class="setting-input"><input name="scanCandidates" type="number" min="1" max="10" step="1"><em>pairs</em></div></label>
+            <div class="kraken-settings-foot"><span>Starting balance: <strong id="kraken-starting-balance">—</strong> USD-equivalent · USD and USDT are treated approximately 1:1.</span><button class="button button-quiet button-small" type="submit">Save bot settings</button></div>
+          </form>
+          <div class="kraken-table-title"><strong>Kraken spot universe</strong><span>Top 30 by heuristic liquidity/momentum screen · USD-equivalent volume conversion is approximate</span></div>
+          <div class="table-scroll"><table class="kraken-table"><thead><tr><th>PAIR</th><th>QUOTE</th><th>TODAY · UTC CHANGE</th><th>24H VOLUME · USD EQ</th><th>SPREAD</th><th>HOLDOUT RETURN</th><th>HOLDOUT DD</th><th>BEST RULE / SIGNAL</th><th>RULE COMPARISON</th></tr></thead><tbody id="kraken-markets-body"><tr><td colspan="9" class="empty-row">Scan to load Kraken spot markets</td></tr></tbody></table></div>
+          <div class="kraken-bot-bottom">
+            <section class="kraken-subpanel"><div class="kraken-subtitle">Open bot positions <span id="kraken-position-count">0</span></div><div class="table-scroll"><table><thead><tr><th>PAIR</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>STOP</th><th>UNREALIZED</th></tr></thead><tbody id="kraken-positions-body"><tr><td colspan="6" class="empty-row">No bot positions</td></tr></tbody></table></div></section>
+            <section class="kraken-subpanel"><div class="kraken-subtitle">Recent bot paper fills</div><div class="table-scroll"><table><thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>REALIZED P&L</th></tr></thead><tbody id="kraken-trades-body"><tr><td colspan="6" class="empty-row">No bot trades yet</td></tr></tbody></table></div></section>
+          </div>
+        </section>
+
+        <div class="lower-grid">
+          <section class="panel positions-panel">
+            <div class="panel-header"><div><div class="panel-title">Open positions</div><div class="panel-subtitle">Spot positions · mark-to-market</div></div><span class="count-badge" id="position-count">0</span></div>
+            <div class="table-scroll"><table><thead><tr><th>MARKET</th><th>QUANTITY</th><th>AVG ENTRY</th><th>MARK</th><th>UNREALIZED P&L</th><th>STOP</th></tr></thead><tbody id="positions-body"><tr><td colspan="6" class="empty-row">No open positions yet</td></tr></tbody></table></div>
+          </section>
+          <section class="panel settings-panel">
+            <div class="panel-header"><div><div class="panel-title">Simulation & risk settings</div><div id="storage-subtitle" class="panel-subtitle">Saved on this server · starting assumptions</div></div><span class="settings-icon">⚙</span></div>
+            <form id="settings-form" class="settings-grid">
+              <label><span>Fee per fill</span><div class="setting-input"><input name="feeBps" type="number" min="0" max="100" step="0.1"><em>bps</em></div></label>
+              <label><span>Slippage per fill</span><div class="setting-input"><input name="slippageBps" type="number" min="0" max="500" step="0.1"><em>bps</em></div></label>
+              <label><span>Order arrival latency</span><div class="setting-input"><input name="executionLatencyMs" type="number" min="0" max="10000" step="50"><em>ms</em></div></label>
+              <label><span>Top-book participation</span><div class="setting-input"><input name="liquidityParticipationPct" type="number" min="1" max="100" step="1"><em>%</em></div></label>
+              <label><span>Max position risk</span><div class="setting-input"><input name="maxRiskPct" type="number" min="0.1" max="5" step="0.1"><em>%</em></div></label>
+              <label><span>Daily loss limit</span><div class="setting-input"><input name="dailyLossLimitPct" type="number" min="0.5" max="50" step="0.5"><em>%</em></div></label>
+              <label><span>Max drawdown</span><div class="setting-input"><input name="maxDrawdownPct" type="number" min="1" max="80" step="1"><em>%</em></div></label>
+              <div class="settings-actions"><p>Spread uses the live quote; latency delays new orders. Liquidity uses a capped share of top-of-book size, not full-depth replay.</p><button class="button button-quiet button-small" type="submit">Save settings</button></div>
+            </form>
+          </section>
+        </div>
+
+        <section class="panel activity-panel">
+          <div class="panel-header activity-header"><div><div class="panel-title">Activity</div><div class="panel-subtitle">Persistent paper orders and fills</div></div><div class="activity-tabs"><button class="activity-tab active" data-table="trades">Trade log</button><button class="activity-tab" data-table="orders">Orders</button></div></div>
+          <div class="table-scroll"><table><thead id="activity-head"></thead><tbody id="activity-body"><tr><td class="empty-row">No paper activity yet</td></tr></tbody></table></div>
+          <div id="activity-storage-note" class="activity-footnote">Trades and account state are stored on this server. No brokerage account data is read or changed.</div>
+        </section>
+
+        <footer class="disclaimer"><span>SIMULATION ONLY</span> Paper results are not a promise of live fills or future performance. This simulator uses public market snapshots, not full-depth replay.</footer>
+      </section>
+
+      <section id="live-view" class="view live-view" aria-labelledby="live-title">
+        <div class="page-heading">
+          <div><div class="eyebrow locked-eyebrow"><span class="lock-small">▣</span>REAL-MONEY EXECUTION DISABLED</div><h1 id="live-title">Live trading</h1><p>Future live account data and order execution will remain isolated from the paper account.</p></div>
+        </div>
+        <div class="live-lock-card">
+          <div class="lock-illustration"><span>⌑</span><i></i></div>
+          <div class="live-lock-copy"><span class="lock-state">FAIL-CLOSED · NOT CONFIGURED</span><h2>Live trading is locked</h2><p>This workspace has no exchange credentials, account connection, or real-money order route. Live order execution is disabled by design. Nothing on this screen can submit a real order.</p></div>
+        </div>
+        <section class="panel shared-signals-panel">
+          <div class="panel-header"><div><div class="panel-title">Shared Kraken strategy signals</div><div class="panel-subtitle">Same read-only market analysis shown to the paper bot · no live account or orders are connected</div></div><span class="lock-mark">READ ONLY</span></div>
+          <div class="table-scroll"><table class="shared-signals-table"><thead><tr><th>PAIR</th><th>SIGNAL</th><th>SELECTED RULE</th><th>ELLIOTT-INSPIRED SWING</th><th>FIB RETRACEMENT</th><th>HOLDOUT RETURN</th></tr></thead><tbody id="shared-signals-body"><tr><td colspan="6" class="empty-row">Run a Kraken scan and backtest in Paper Trading to populate shared signals.</td></tr></tbody></table></div>
+        </section>
+        <div class="live-info-grid">
+          <article class="panel live-info-card"><div class="live-info-icon">01</div><h3>Choose your venue</h3><p>Select an exchange and spot or derivatives market. No exchange has been selected for live connectivity.</p><span class="live-card-status">ACTION REQUIRED</span></article>
+          <article class="panel live-info-card"><div class="live-info-icon">02</div><h3>Secure runtime</h3><p>Credentials must be stored in a deployed backend secret manager with withdrawal permissions disabled. Never paste keys into this dashboard.</p><span class="live-card-status">NOT CONFIGURED</span></article>
+          <article class="panel live-info-card"><div class="live-info-icon">03</div><h3>Explicit enablement</h3><p>Before any live execution work, confirm instruments, deployment, risk limits, and an explicit live-trading enable action.</p><span class="live-card-status">DISABLED</span></article>
+        </div>
+        <div class="live-boundary"><span class="boundary-icon">!</span><div><strong>No 24/7 agent is running</strong><p>This is a local dashboard prototype, not a deployed or monitored service. The Kraken bot is paper-only and stops when this dashboard closes; no model or notification service is connected.</p></div></div>
+        <section class="panel live-status-panel"><div class="panel-header"><div><div class="panel-title">Live account status</div><div class="panel-subtitle">Separate from simulated balances and positions</div></div><span class="lock-mark">LOCKED</span></div><div class="live-status-grid"><div><span>EXCHANGE</span><strong>Not selected</strong></div><div><span>ACCOUNT CONNECTION</span><strong>Disconnected</strong></div><div><span>LIVE ORDERS</span><strong class="danger-text">Disabled</strong></div><div><span>CREDENTIALS</span><strong>Not requested or stored</strong></div></div></section>
+        <footer class="disclaimer"><span>LIVE MODE LOCKED</span> No exchange or market selection has been made. Live execution will not be implemented until you explicitly choose a venue and clarify the required deployment and risk details.</footer>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
