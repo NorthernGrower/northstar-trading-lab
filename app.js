@@ -166,7 +166,7 @@
     if (!positions.length) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.className = 'empty-row';
       cell.textContent = 'No open positions yet';
       row.append(cell);
@@ -175,13 +175,23 @@
     }
     for (const position of positions) {
       const row = document.createElement('tr');
-      appendCell(row, `${position.symbol.slice(0, -4)} / USDT`, 'symbol-cell');
+      const direction = position.direction === 'SHORT' ? 'SHORT' : 'LONG';
+      appendCell(row, `${position.symbol.slice(0, -4)} / USDT · ${direction}`, direction === 'SHORT' ? 'symbol-cell negative' : 'symbol-cell');
       appendCell(row, quantityFormat(position.qty));
       appendCell(row, money(position.avgEntry));
       appendCell(row, money(position.markPrice));
       appendCell(row, money(position.unrealizedPnl, true));
       appendCell(row, position.stopLoss ? money(position.stopLoss) : '—');
       addClass(row, 4, position.unrealizedPnl >= 0 ? 'positive' : 'negative');
+      const actionCell = document.createElement('td');
+      const exitButton = document.createElement('button');
+      exitButton.type = 'button';
+      exitButton.className = 'button button-quiet button-small position-exit-button';
+      exitButton.dataset.symbol = position.symbol;
+      exitButton.dataset.side = direction === 'SHORT' ? 'COVER' : 'SELL';
+      exitButton.textContent = direction === 'SHORT' ? 'Cover short' : 'Close long';
+      actionCell.append(exitButton);
+      row.append(actionCell);
       tbody.append(row);
     }
   }
@@ -212,7 +222,7 @@
       const row = document.createElement('tr');
       appendCell(row, formatTime(activeTable === 'trades' ? entry.timestamp : entry.createdAt), 'time-cell');
       appendCell(row, `${entry.symbol.slice(0, -4)} / USDT`, 'symbol-cell');
-      appendCell(row, entry.side, entry.side === 'BUY' ? 'positive' : 'negative');
+      appendCell(row, entry.side, ['BUY', 'COVER'].includes(entry.side) ? 'positive' : 'negative');
       appendCell(row, entry.type.replaceAll('_', ' '));
       appendCell(row, quantityFormat(entry.qty ?? entry.quantity));
       if (activeTable === 'trades') {
@@ -327,17 +337,41 @@
     const type = $('#order-type').value;
     $('#limit-field').classList.toggle('hidden', type !== 'LIMIT');
     $('#trigger-field').classList.toggle('hidden', type !== 'STOP_MARKET');
-    $('#stop-field').classList.toggle('hidden', side !== 'BUY');
+    const isEntry = side === 'BUY' || side === 'SHORT';
+    $('#stop-field').classList.toggle('hidden', !isEntry);
+    $('#stop-price-label').firstChild.textContent = side === 'SHORT' ? 'SHORT INVALIDATION STOP ' : 'PROTECTIVE STOP LOSS ';
+    $('#stop-price-label').querySelector('span').textContent = side === 'SHORT' ? 'USDT · ABOVE ENTRY' : 'USDT · BELOW ENTRY';
+    $('#stop-price-input').placeholder = side === 'SHORT' ? 'Above entry price' : 'Below entry price';
+
+    const position = account?.positions.find((item) => item.symbol === symbol);
+    const direction = position?.direction || 'LONG';
+    const sideAllowed = side === 'BUY' ? !position || direction === 'LONG'
+      : side === 'SELL' ? Boolean(position) && direction === 'LONG'
+        : side === 'SHORT' ? !position || direction === 'SHORT'
+          : side === 'COVER' ? Boolean(position) && direction === 'SHORT' : false;
     const submit = $('#submit-order');
-    submit.textContent = `Place simulated ${side.toLowerCase()}`;
+    submit.textContent = side === 'SHORT' ? 'Open simulated short'
+      : side === 'COVER' ? 'Cover simulated short'
+        : `Place simulated ${side.toLowerCase()}`;
     submit.classList.toggle('button-buy', side === 'BUY');
     submit.classList.toggle('button-sell', side === 'SELL');
+    submit.classList.toggle('button-short', side === 'SHORT');
+    submit.classList.toggle('button-cover', side === 'COVER');
+    document.querySelectorAll('.side-button').forEach((button) => {
+      button.disabled = button.dataset.side === 'SELL' ? !position || direction !== 'LONG'
+        : button.dataset.side === 'COVER' ? !position || direction !== 'SHORT'
+          : button.dataset.side === 'BUY' ? Boolean(position && direction === 'SHORT')
+            : Boolean(position && direction !== 'SHORT');
+    });
     const qty = Number($('#quantity-input').value);
     const reference = market?.price || 0;
     $('#notional-estimate').textContent = qty > 0 && reference > 0 ? money(qty * reference) : '—';
-    if (side === 'BUY' && market && !$('#stop-price-input').value) {
-      $('#stop-price-input').value = (market.price * 0.98).toFixed(market.price >= 100 ? 2 : 6);
+    if (isEntry && market && !$('#stop-price-input').value) {
+      const stopPrice = side === 'SHORT' ? market.price * 1.02 : market.price * 0.98;
+      $('#stop-price-input').value = stopPrice.toFixed(market.price >= 100 ? 2 : 6);
     }
+    const entriesBlocked = isEntry && Boolean(account?.autoHaltReason || account?.manualKillSwitch);
+    submit.disabled = !account || !sideAllowed || (isEntry && !marketAvailable) || qty <= 0 || entriesBlocked;
   }
 
   function drawChart() {
@@ -451,25 +485,34 @@
     }
   }
 
+  const VIEWS = { paper: '#paper-view', coins: '#coins-view', live: '#live-view' };
+  const VIEW_LABELS = { paper: 'PAPER TRADING', coins: 'COIN SCANNER', live: 'LIVE TRADING' };
+
   function switchMode(mode) {
-    const paperMode = mode === 'paper';
+    const target = Object.prototype.hasOwnProperty.call(VIEWS, mode) ? mode : 'paper';
     document.querySelectorAll('.nav-item').forEach((button) => {
-      const selected = button.dataset.mode === mode;
+      const selected = button.dataset.mode === target;
       button.classList.toggle('active', selected);
       if (selected) button.setAttribute('aria-current', 'page');
       else button.removeAttribute('aria-current');
     });
-    $('#paper-view').classList.toggle('active', paperMode);
-    $('#live-view').classList.toggle('active', !paperMode);
-    $('#breadcrumb-mode').textContent = paperMode ? 'PAPER TRADING' : 'LIVE TRADING';
-    window.history.replaceState(null, '', paperMode ? '#paper' : '#live');
-    if (!paperMode) api('/api/live').catch(() => {});
-    if (paperMode) window.setTimeout(drawChart, 30);
+    for (const [name, selector] of Object.entries(VIEWS)) {
+      $(selector).classList.toggle('active', name === target);
+    }
+    $('#breadcrumb-mode').textContent = VIEW_LABELS[target];
+    window.history.replaceState(null, '', `#${target}`);
+    if (target === 'live') api('/api/live').catch(() => {});
+    if (target === 'paper') window.setTimeout(drawChart, 30);
   }
+
+  // The Coins page opens the same analysis panel, so it can ask for a view change.
+  window.NorthstarSwitchMode = switchMode;
 
   document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => switchMode(button.dataset.mode)));
   document.querySelectorAll('.side-button').forEach((button) => button.addEventListener('click', () => {
-    side = button.dataset.side;
+    const nextSide = button.dataset.side;
+    if ((nextSide === 'BUY' || nextSide === 'SHORT') && nextSide !== side) $('#stop-price-input').value = '';
+    side = nextSide;
     document.querySelectorAll('.side-button').forEach((item) => item.classList.toggle('selected', item === button));
     updateOrderForm();
   }));
@@ -492,23 +535,17 @@
   $('#order-type').addEventListener('change', updateOrderForm);
   $('#quantity-input').addEventListener('input', updateOrderForm);
 
-  $('#submit-order').addEventListener('click', async () => {
-    const payload = {
-      symbol,
-      side,
-      type: $('#order-type').value,
-      quantity: Number($('#quantity-input').value),
-      stopLossPrice: side === 'BUY' ? Number($('#stop-price-input').value) : undefined,
-      limitPrice: $('#order-type').value === 'LIMIT' ? Number($('#limit-price-input').value) : undefined,
-      triggerPrice: $('#order-type').value === 'STOP_MARKET' ? Number($('#trigger-price-input').value) : undefined,
-    };
+  async function placePaperOrder(payload) {
     try {
       const result = await api('/api/paper/orders', { method: 'POST', body: JSON.stringify(payload) });
       account = result.account;
       renderAccount();
       const order = result.order;
+      const asset = payload.symbol.slice(0, -4);
       const message = order.status === 'FILLED'
-        ? `Paper order filled ${quantityFormat(order.filledQty)} ${symbol.slice(0, -4)}.`
+        ? payload.side === 'SHORT' ? `Simulated short opened: ${quantityFormat(order.filledQty)} ${asset}.`
+          : payload.side === 'COVER' ? `Simulated short covered: ${quantityFormat(order.filledQty)} ${asset}.`
+            : `Paper order filled ${quantityFormat(order.filledQty)} ${asset}.`
         : order.status === 'PARTIALLY_FILLED'
           ? `Paper order partially filled ${quantityFormat(order.filledQty)}; remaining quantity is open or cancelled.`
           : 'Paper order accepted and waiting for its price condition.';
@@ -517,6 +554,30 @@
     } catch (error) {
       showToast(error.message, true);
     }
+  }
+
+  $('#submit-order').addEventListener('click', () => {
+    placePaperOrder({
+      symbol,
+      side,
+      type: $('#order-type').value,
+      quantity: Number($('#quantity-input').value),
+      stopLossPrice: side === 'BUY' || side === 'SHORT' ? Number($('#stop-price-input').value) : undefined,
+      limitPrice: $('#order-type').value === 'LIMIT' ? Number($('#limit-price-input').value) : undefined,
+      triggerPrice: $('#order-type').value === 'STOP_MARKET' ? Number($('#trigger-price-input').value) : undefined,
+    });
+  });
+  $('#positions-body').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-symbol][data-side]');
+    if (!button) return;
+    const position = account?.positions.find((item) => item.symbol === button.dataset.symbol);
+    if (!position) return;
+    placePaperOrder({
+      symbol: button.dataset.symbol,
+      side: button.dataset.side,
+      type: 'MARKET',
+      quantity: position.qty,
+    });
   });
 
   $('#settings-form').addEventListener('submit', async (event) => {
@@ -560,7 +621,8 @@
   });
 
   window.addEventListener('resize', drawChart);
-  const initialMode = window.location.hash === '#live' ? 'live' : 'paper';
+  const initialHash = window.location.hash.replace('#', '');
+  const initialMode = Object.prototype.hasOwnProperty.call(VIEWS, initialHash) ? initialHash : 'paper';
   switchMode(initialMode);
   refreshMarket(true);
   refreshTimer = window.setInterval(() => refreshMarket(false), 4000);

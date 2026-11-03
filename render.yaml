@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: northstar-trading-lab
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: NORTHSTAR_HEADLESS_BOT
+        value: "on"

@@ -1,0 +1,13 @@
+{
+  "name": "northstar-trading-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paper trading dashboard with a headless Kraken spot confluence bot",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

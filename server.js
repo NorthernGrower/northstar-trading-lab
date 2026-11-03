@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
+const botService = require('./bot-service');
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 4173);
@@ -77,6 +78,27 @@ function saveState(state) {
 
 let paper = loadState();
 let consecutiveMarketErrors = 0;
+
+// The Kraken paper engine also runs here, so the scanner keeps working with no
+// dashboard open. It only calls Kraken's public endpoints and writes simulated
+// fills; it cannot place a real order. Set NORTHSTAR_HEADLESS_BOT=off to skip it.
+const headlessBot = (() => {
+  if (!botService.headlessEnabled()) {
+    console.log('Server-side Kraken paper engine disabled (NORTHSTAR_HEADLESS_BOT=off).');
+    return null;
+  }
+  try {
+    const runtime = botService.startHeadlessBot({
+      dataDir: DATA_DIR,
+      sourcePath: path.join(__dirname, 'kraken-bot.js'),
+    });
+    console.log(`Server-side Kraken paper engine running; paper state: ${runtime.stateFile}`);
+    return runtime;
+  } catch (error) {
+    console.error('Server-side Kraken paper engine could not start:', error.message);
+    return null;
+  }
+})();
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
@@ -169,15 +191,20 @@ async function fetchMarket(symbol) {
 
 function positionRisk(position, feeBps = 0) {
   const feeRate = feeBps / 10000;
+  const isShort = position?.direction === 'SHORT';
   return (position?.lots || []).reduce((total, lot) => {
-    return total + Math.max(0, lot.entryPrice - lot.stopLossPrice) * lot.qty
+    const stopDistance = isShort ? lot.stopLossPrice - lot.entryPrice : lot.entryPrice - lot.stopLossPrice;
+    return total + Math.max(0, stopDistance) * lot.qty
       + lot.entryFeeRemaining + lot.qty * lot.stopLossPrice * feeRate;
   }, 0);
 }
 
 function accountEquity(state) {
   return state.cash + Object.values(state.positions).reduce((total, position) => {
-    return total + position.qty * position.markPrice;
+    if (position.direction !== 'SHORT') return total + position.qty * position.markPrice;
+    const collateral = Number(position.reservedMargin) || 0;
+    const unrealized = position.lots.reduce((sum, lot) => sum + lot.qty * (lot.entryPrice - position.markPrice), 0);
+    return total + collateral + unrealized;
   }, 0);
 }
 
@@ -219,7 +246,7 @@ function enforceRiskLimits(state) {
   }
   if (state.autoHaltReason) {
     for (const order of state.orders) {
-      if (isActiveOrder(order) && order.side === 'BUY' && order.type !== 'STOP_LOSS') {
+      if (isActiveOrder(order) && isEntrySide(order.side) && order.type !== 'STOP_LOSS') {
         order.status = 'CANCELLED';
         order.cancelReason = state.autoHaltReason;
       }
@@ -235,16 +262,20 @@ function updatePositionMark(state, market) {
   enforceRiskLimits(state);
 }
 
-function openPosition(state, symbol, qty, price, fee, stopLossPrice) {
-  const position = state.positions[symbol] || { qty: 0, avgEntry: 0, markPrice: price, lots: [] };
+function openPosition(state, symbol, direction, qty, price, fee, stopLossPrice) {
+  const position = state.positions[symbol] || { direction, qty: 0, avgEntry: 0, markPrice: price, reservedMargin: 0, lots: [] };
+  position.direction = position.direction || direction;
+  const reservedMargin = position.direction === 'SHORT' ? price * qty : 0;
   position.lots.push({
     qty,
     entryPrice: price,
     stopLossPrice,
     entryFeeRemaining: fee,
+    reservedMarginRemaining: reservedMargin,
     openedAt: new Date().toISOString(),
   });
   position.qty += qty;
+  position.reservedMargin = (Number(position.reservedMargin) || 0) + reservedMargin;
   position.avgEntry = position.lots.reduce((sum, lot) => sum + lot.qty * lot.entryPrice, 0) / position.qty;
   position.markPrice = price;
   state.positions[symbol] = position;
@@ -252,25 +283,42 @@ function openPosition(state, symbol, qty, price, fee, stopLossPrice) {
 
 function closePosition(state, symbol, qty, price, exitFee) {
   const position = state.positions[symbol];
+  const isShort = position.direction === 'SHORT';
   let remaining = qty;
   let realizedPnl = -exitFee;
+  let grossPnl = 0;
+  let releasedMargin = 0;
   for (const lot of position.lots) {
     if (remaining <= 1e-12) break;
     const beforeQty = lot.qty;
     const closedQty = Math.min(beforeQty, remaining);
     const entryFee = lot.entryFeeRemaining * (closedQty / beforeQty);
-    realizedPnl += closedQty * (price - lot.entryPrice) - entryFee;
+    const lotGrossPnl = closedQty * (isShort ? lot.entryPrice - price : price - lot.entryPrice);
+    const marginReleased = isShort ? (Number(lot.reservedMarginRemaining) || 0) * closedQty / beforeQty : 0;
+    grossPnl += lotGrossPnl;
+    realizedPnl += lotGrossPnl - entryFee;
+    releasedMargin += marginReleased;
     lot.qty -= closedQty;
     lot.entryFeeRemaining -= entryFee;
+    lot.reservedMarginRemaining = Math.max(0, (Number(lot.reservedMarginRemaining) || 0) - marginReleased);
     remaining -= closedQty;
   }
   position.lots = position.lots.filter((lot) => lot.qty > 1e-12);
   position.qty = position.lots.reduce((sum, lot) => sum + lot.qty, 0);
+  position.reservedMargin = position.lots.reduce((sum, lot) => sum + (Number(lot.reservedMarginRemaining) || 0), 0);
   position.avgEntry = position.qty > 0
     ? position.lots.reduce((sum, lot) => sum + lot.qty * lot.entryPrice, 0) / position.qty
     : 0;
   if (position.qty <= 1e-12) delete state.positions[symbol];
-  return realizedPnl;
+  return { realizedPnl, grossPnl, releasedMargin };
+}
+
+function isBuySide(side) {
+  return side === 'BUY' || side === 'COVER';
+}
+
+function isEntrySide(side) {
+  return side === 'BUY' || side === 'SHORT';
 }
 
 function createLiquidity(market) {
@@ -280,10 +328,10 @@ function createLiquidity(market) {
 function isOrderTriggered(order, market) {
   if (order.type === 'MARKET' || order.type === 'STOP_LOSS') return true;
   if (order.type === 'LIMIT') {
-    return order.side === 'BUY' ? market.askPrice <= order.limitPrice : market.bidPrice >= order.limitPrice;
+    return isBuySide(order.side) ? market.askPrice <= order.limitPrice : market.bidPrice >= order.limitPrice;
   }
   if (order.type === 'STOP_MARKET') {
-    return order.side === 'BUY' ? market.price >= order.triggerPrice : market.price <= order.triggerPrice;
+    return isBuySide(order.side) ? market.price >= order.triggerPrice : market.price <= order.triggerPrice;
   }
   return false;
 }
@@ -299,49 +347,62 @@ function isActiveOrder(order) {
 
 function attemptFill(state, order, market, liquidity) {
   if (!isActiveOrder(order) || !isOrderTriggered(order, market)) return;
-  if (order.side === 'BUY' && (state.manualKillSwitch || state.autoHaltReason)) {
+  if (isEntrySide(order.side) && (state.manualKillSwitch || state.autoHaltReason)) {
     cancelOrder(order, state.autoHaltReason || 'Manual kill switch is active');
     return;
   }
-  const visibleQty = order.side === 'BUY' ? market.askQty : market.bidQty;
-  const remainingLiquidity = order.side === 'BUY' ? liquidity.buyQty : liquidity.sellQty;
+  const buySide = isBuySide(order.side);
+  const visibleQty = buySide ? market.askQty : market.bidQty;
+  const remainingLiquidity = buySide ? liquidity.buyQty : liquidity.sellQty;
   const participation = state.settings.liquidityParticipationPct / 100;
   let fillQty = Math.min(order.remainingQty, remainingLiquidity, visibleQty * participation);
-  if (order.side === 'SELL') {
-    const position = state.positions[order.symbol];
-    if (!position || position.qty <= 1e-12) {
-      cancelOrder(order, 'No open spot position remains');
+  const position = state.positions[order.symbol];
+  if (order.side === 'SELL' || order.side === 'COVER') {
+    const expectedDirection = order.side === 'COVER' ? 'SHORT' : 'LONG';
+    if (!position || (position.direction || 'LONG') !== expectedDirection) {
+      cancelOrder(order, order.side === 'COVER' ? 'No open paper short remains to cover' : 'No open paper long remains to sell');
       return;
     }
     fillQty = Math.min(fillQty, position.qty);
+  }
+  if (order.side === 'BUY' && position?.direction === 'SHORT') {
+    cancelOrder(order, 'Use a cover order to close the simulated short');
+    return;
+  }
+  if (order.side === 'SHORT' && position && position.direction !== 'SHORT') {
+    cancelOrder(order, 'Close the open long before opening a simulated short');
+    return;
   }
   if (fillQty <= 1e-12) {
     if (order.type === 'MARKET') cancelOrder(order, 'No top-of-book liquidity available; unfilled market remainder was cancelled');
     return;
   }
 
-  const rawPrice = order.side === 'BUY' ? market.askPrice : market.bidPrice;
+  const rawPrice = buySide ? market.askPrice : market.bidPrice;
   const slip = state.settings.slippageBps / 10000;
-  let fillPrice = order.side === 'BUY' ? rawPrice * (1 + slip) : rawPrice * (1 - slip);
+  let fillPrice = buySide ? rawPrice * (1 + slip) : rawPrice * (1 - slip);
   if (order.type === 'LIMIT') {
-    fillPrice = order.side === 'BUY' ? Math.min(fillPrice, order.limitPrice) : Math.max(fillPrice, order.limitPrice);
-    if ((order.side === 'BUY' && fillPrice > order.limitPrice) || (order.side === 'SELL' && fillPrice < order.limitPrice)) return;
+    fillPrice = buySide ? Math.min(fillPrice, order.limitPrice) : Math.max(fillPrice, order.limitPrice);
+    if ((buySide && fillPrice > order.limitPrice) || (!buySide && fillPrice < order.limitPrice)) return;
   }
   const feeRate = state.settings.feeBps / 10000;
-  if (order.side === 'BUY') {
-    if (fillPrice <= order.stopLossPrice) {
+  if (order.side === 'BUY' || order.side === 'SHORT') {
+    const isShort = order.side === 'SHORT';
+    const protectiveStopValid = isShort ? fillPrice < order.stopLossPrice : fillPrice > order.stopLossPrice;
+    if (!protectiveStopValid) {
       cancelOrder(order, 'Market crossed the protective stop before entry; order cancelled');
       return;
     }
     const cashLimitedQty = state.cash / (fillPrice * (1 + feeRate));
     if (cashLimitedQty <= 1e-12) {
-      cancelOrder(order, 'No simulated cash remains for this buy order');
+      cancelOrder(order, 'No simulated cash remains for this paper entry');
       return;
     }
     fillQty = Math.min(fillQty, cashLimitedQty);
     const equity = accountEquity(state);
     const existingRisk = positionRisk(state.positions[order.symbol], state.settings.feeBps);
-    const addedRisk = Math.max(0, fillPrice - order.stopLossPrice) * fillQty + fillQty * (fillPrice + order.stopLossPrice) * feeRate;
+    const stopDistance = isShort ? order.stopLossPrice - fillPrice : fillPrice - order.stopLossPrice;
+    const addedRisk = Math.max(0, stopDistance) * fillQty + fillQty * (fillPrice + order.stopLossPrice) * feeRate;
     if (existingRisk + addedRisk > equity * state.settings.maxRiskPct / 100 + 1e-8) {
       cancelOrder(order, 'Position risk limit would be exceeded at this fill price');
       return;
@@ -357,12 +418,19 @@ function attemptFill(state, order, market, liquidity) {
   let realizedPnl = 0;
   if (order.side === 'BUY') {
     state.cash -= notional + fee;
-    openPosition(state, order.symbol, fillQty, fillPrice, fee, order.stopLossPrice);
-  } else {
+    openPosition(state, order.symbol, 'LONG', fillQty, fillPrice, fee, order.stopLossPrice);
+  } else if (order.side === 'SHORT') {
+    state.cash -= notional + fee;
+    openPosition(state, order.symbol, 'SHORT', fillQty, fillPrice, fee, order.stopLossPrice);
+  } else if (order.side === 'SELL') {
     state.cash += notional - fee;
-    realizedPnl = closePosition(state, order.symbol, fillQty, fillPrice, fee);
+    realizedPnl = closePosition(state, order.symbol, fillQty, fillPrice, fee).realizedPnl;
+  } else {
+    const closed = closePosition(state, order.symbol, fillQty, fillPrice, fee);
+    state.cash += closed.releasedMargin + closed.grossPnl - fee;
+    realizedPnl = closed.realizedPnl;
   }
-  if (order.side === 'BUY') liquidity.buyQty = Math.max(0, liquidity.buyQty - fillQty);
+  if (buySide) liquidity.buyQty = Math.max(0, liquidity.buyQty - fillQty);
   else liquidity.sellQty = Math.max(0, liquidity.sellQty - fillQty);
 
   order.filledQty += fillQty;
@@ -396,7 +464,7 @@ function attemptFill(state, order, market, liquidity) {
 function refreshOrderStates(state, market, liquidity) {
   for (const order of state.orders) {
     if (!isActiveOrder(order) || order.symbol !== market.symbol) continue;
-    if (order.side === 'BUY' && (state.manualKillSwitch || state.autoHaltReason) && order.type !== 'STOP_LOSS') {
+    if (isEntrySide(order.side) && (state.manualKillSwitch || state.autoHaltReason) && order.type !== 'STOP_LOSS') {
       cancelOrder(order, state.autoHaltReason || 'Manual kill switch is active');
       continue;
     }
@@ -404,13 +472,14 @@ function refreshOrderStates(state, market, liquidity) {
   }
 
   const position = state.positions[market.symbol];
-  const stopTriggered = position?.lots.some((lot) => market.price <= lot.stopLossPrice);
+  const isShort = position?.direction === 'SHORT';
+  const stopTriggered = position?.lots.some((lot) => isShort ? market.price >= lot.stopLossPrice : market.price <= lot.stopLossPrice);
   const existingStopOrder = state.orders.some((order) => isActiveOrder(order) && order.symbol === market.symbol && order.type === 'STOP_LOSS');
   if (stopTriggered && !existingStopOrder) {
     const order = {
       id: `P-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       symbol: market.symbol,
-      side: 'SELL',
+      side: isShort ? 'COVER' : 'SELL',
       type: 'STOP_LOSS',
       quantity: position.qty,
       filledQty: 0,
@@ -432,17 +501,26 @@ function refreshOrderStates(state, market, liquidity) {
 
 function stateSnapshot(state) {
   const values = metrics(state);
-  const positions = Object.entries(state.positions).map(([symbol, position]) => ({
-    symbol,
-    qty: position.qty,
-    avgEntry: position.avgEntry,
-    markPrice: position.markPrice,
-    marketValue: position.qty * position.markPrice,
-    unrealizedPnl: position.qty * (position.markPrice - position.avgEntry)
-      - position.lots.reduce((sum, lot) => sum + lot.entryFeeRemaining, 0),
-    openRisk: positionRisk(position, state.settings.feeBps),
-    stopLoss: position.lots.length ? Math.min(...position.lots.map((lot) => lot.stopLossPrice)) : null,
-  }));
+  const positions = Object.entries(state.positions).map(([symbol, position]) => {
+    const isShort = position.direction === 'SHORT';
+    const unrealizedPnl = position.lots.reduce((sum, lot) => {
+      const move = isShort ? lot.entryPrice - position.markPrice : position.markPrice - lot.entryPrice;
+      return sum + lot.qty * move - lot.entryFeeRemaining;
+    }, 0);
+    return {
+      symbol,
+      direction: isShort ? 'SHORT' : 'LONG',
+      qty: position.qty,
+      avgEntry: position.avgEntry,
+      markPrice: position.markPrice,
+      marketValue: position.qty * position.markPrice,
+      unrealizedPnl,
+      openRisk: positionRisk(position, state.settings.feeBps),
+      stopLoss: position.lots.length ? (isShort
+        ? Math.max(...position.lots.map((lot) => lot.stopLossPrice))
+        : Math.min(...position.lots.map((lot) => lot.stopLossPrice))) : null,
+    };
+  });
   return {
     mode: 'PAPER',
     quoteCurrency: 'USDT',
@@ -502,6 +580,7 @@ async function handleApi(request, response, url) {
       liveTradingEnabled: false,
       liveOrderExecutionImplemented: false,
       marketDataProvider: 'Binance Spot public REST market data; no credentials used',
+      serverSideKrakenEngine: Boolean(headlessBot),
     });
   }
 
@@ -540,6 +619,61 @@ async function handleApi(request, response, url) {
       ordersEnabled: false,
       message: 'Live trading is not configured. No live credentials or order routes are installed.',
     });
+  }
+
+  if (url.pathname.startsWith('/api/bot/')) {
+    if (!headlessBot) {
+      return sendJson(response, 200, {
+        headless: false,
+        runtime: 'browser',
+        message: 'This host does not run the server-side paper engine; the dashboard trades its own browser account.',
+      });
+    }
+    const action = url.pathname.slice('/api/bot/'.length);
+
+    if (request.method === 'GET' && action === 'state') {
+      try {
+        return sendJson(response, 200, {
+          headless: true,
+          runtime: 'node',
+          stateFile: headlessBot.stateFile,
+          snapshot: { ...headlessBot.api.getSnapshot(), engineRuntime: 'node' },
+        });
+      } catch (error) {
+        return sendJson(response, 503, { headless: true, error: error.message || 'The server-side bot is unavailable.' });
+      }
+    }
+
+    if (request.method === 'GET' && action === 'detail') {
+      const pair = url.searchParams.get('pair') || '';
+      const interval = Number(url.searchParams.get('interval') || '5');
+      const prioritizeForPaper = url.searchParams.get('paper') !== 'false';
+      if (!/^[A-Z0-9./_-]{1,30}$/i.test(pair)) return sendJson(response, 400, { error: 'Invalid Kraken pair.' });
+      if (![1, 5, 15, 30, 60, 240, 1440].includes(interval)) return sendJson(response, 400, { error: 'Invalid Kraken OHLC interval.' });
+      try {
+        return sendJson(response, 200, await headlessBot.api.loadPairDetail(pair, interval, prioritizeForPaper));
+      } catch (error) {
+        return sendJson(response, 502, { error: error.message || 'Kraken history is unavailable.' });
+      }
+    }
+
+    if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed.' });
+    try {
+      assertSameOrigin(request);
+      const body = await readJson(request);
+      if (action === 'scan') await headlessBot.api.scan();
+      else if (action === 'focus') headlessBot.api.focusPair(String(body.pairKey || ''));
+      else if (action === 'entries') headlessBot.api.setEntriesEnabled(Boolean(body.enabled));
+      else if (action === 'settings') headlessBot.api.updateSettings(body);
+      else if (action === 'reset') headlessBot.api.resetAccount();
+      else return sendJson(response, 404, { error: 'Unknown bot action.' });
+      return sendJson(response, 200, {
+        headless: true,
+        snapshot: { ...headlessBot.api.getSnapshot(), engineRuntime: 'node' },
+      });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message || 'The bot action failed.' });
+    }
   }
 
   if (request.method === 'GET' && url.pathname.startsWith('/api/kraken/')) {
@@ -601,7 +735,7 @@ async function handleApi(request, response, url) {
       paper.manualKillSwitch = body.enabled;
       if (body.enabled) {
         for (const order of paper.orders) {
-          if (isActiveOrder(order) && order.type !== 'STOP_LOSS') cancelOrder(order, 'Manual kill switch is active');
+          if (isActiveOrder(order) && isEntrySide(order.side) && order.type !== 'STOP_LOSS') cancelOrder(order, 'Manual kill switch is active');
         }
       } else if (!paper.autoHaltReason) {
         paper.manualKillSwitch = false;
@@ -622,27 +756,32 @@ async function handleApi(request, response, url) {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/paper/orders') {
-      if (paper.manualKillSwitch || paper.autoHaltReason) {
-        return sendJson(response, 423, { error: paper.autoHaltReason || 'Manual kill switch is active.' });
-      }
       const symbol = String(body.symbol || '').toUpperCase();
       const side = String(body.side || '').toUpperCase();
       const type = String(body.type || '').toUpperCase();
       const quantity = Number(body.quantity);
       const stopLossPrice = Number(body.stopLossPrice);
-      if (!validSymbol(symbol) || !['BUY', 'SELL'].includes(side) || !['MARKET', 'LIMIT', 'STOP_MARKET'].includes(type)) {
+      if (!validSymbol(symbol) || !['BUY', 'SELL', 'SHORT', 'COVER'].includes(side) || !['MARKET', 'LIMIT', 'STOP_MARKET'].includes(type)) {
         return sendJson(response, 400, { error: 'Invalid symbol, side, or order type.' });
       }
+      if (isEntrySide(side) && (paper.manualKillSwitch || paper.autoHaltReason)) {
+        return sendJson(response, 423, { error: paper.autoHaltReason || 'Manual kill switch is active.' });
+      }
       if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100000000) return sendJson(response, 400, { error: 'Order quantity must be greater than zero.' });
-      if (side === 'BUY' && (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0)) {
-        return sendJson(response, 400, { error: 'A protective stop-loss price is required for every paper buy.' });
+      if (isEntrySide(side) && (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0)) {
+        return sendJson(response, 400, { error: 'A protective stop-loss price is required for every paper entry.' });
       }
       if ((type === 'LIMIT' && !(Number(body.limitPrice) > 0)) || (type === 'STOP_MARKET' && !(Number(body.triggerPrice) > 0))) {
         return sendJson(response, 400, { error: 'This order type requires a valid limit or trigger price.' });
       }
       const position = paper.positions[symbol];
-      if (side === 'SELL' && (!position || quantity > position.qty + 1e-10)) {
-        return sendJson(response, 400, { error: 'A spot paper sell cannot exceed the open position.' });
+      if (side === 'BUY' && position?.direction === 'SHORT') return sendJson(response, 400, { error: 'Cover the open simulated short before opening a long.' });
+      if (side === 'SHORT' && position && position.direction !== 'SHORT') return sendJson(response, 400, { error: 'Close the open long before opening a simulated short.' });
+      if (side === 'SELL' && (!position || position.direction === 'SHORT' || quantity > position.qty + 1e-10)) {
+        return sendJson(response, 400, { error: 'A simulated long sell cannot exceed an open long position.' });
+      }
+      if (side === 'COVER' && (!position || position.direction !== 'SHORT' || quantity > position.qty + 1e-10)) {
+        return sendJson(response, 400, { error: 'A cover order cannot exceed an open simulated short.' });
       }
 
       let market;
@@ -655,15 +794,20 @@ async function handleApi(request, response, url) {
       } catch (error) {
         return sendJson(response, 503, { error: 'Fresh market data is required; the order was not accepted.', detail: error.message });
       }
-      if (side === 'BUY') {
-        const referenceEntry = type === 'LIMIT' ? Number(body.limitPrice) : type === 'STOP_MARKET' ? Number(body.triggerPrice) : market.askPrice * (1 + paper.settings.slippageBps / 10000);
-        if (stopLossPrice >= referenceEntry) return sendJson(response, 400, { error: 'Buy stop-loss must be below the expected entry price.' });
-        const riskEstimate = Math.max(0, referenceEntry - stopLossPrice) * quantity + (referenceEntry + stopLossPrice) * quantity * paper.settings.feeBps / 10000;
+      if (isEntrySide(side)) {
+        const slip = paper.settings.slippageBps / 10000;
+        const referenceEntry = type === 'LIMIT' ? Number(body.limitPrice) : type === 'STOP_MARKET' ? Number(body.triggerPrice)
+          : side === 'BUY' ? market.askPrice * (1 + slip) : market.bidPrice * (1 - slip);
+        if (side === 'BUY' && stopLossPrice >= referenceEntry) return sendJson(response, 400, { error: 'Long stop-loss must be below the expected entry price.' });
+        if (side === 'SHORT' && stopLossPrice <= referenceEntry) return sendJson(response, 400, { error: 'Short stop-loss must be above the expected entry price.' });
+        const stopDistance = side === 'SHORT' ? stopLossPrice - referenceEntry : referenceEntry - stopLossPrice;
+        const feeRate = paper.settings.feeBps / 10000;
+        const riskEstimate = Math.max(0, stopDistance) * quantity + (referenceEntry + stopLossPrice) * quantity * feeRate;
         const equityLimit = accountEquity(paper) * paper.settings.maxRiskPct / 100;
-        if (positionRisk(paper.positions[symbol], paper.settings.feeBps) + riskEstimate > equityLimit + 1e-8) {
+        if (positionRisk(position, paper.settings.feeBps) + riskEstimate > equityLimit + 1e-8) {
           return sendJson(response, 400, { error: `Estimated position risk exceeds the configured ${paper.settings.maxRiskPct}% account limit.` });
         }
-        if (quantity * referenceEntry > paper.cash * 1.02) return sendJson(response, 400, { error: 'Order notional exceeds available paper cash.' });
+        if (quantity * referenceEntry * (1 + feeRate) > paper.cash * 1.02) return sendJson(response, 400, { error: 'Order notional exceeds available 1× paper collateral.' });
       }
 
       const order = {
@@ -677,7 +821,7 @@ async function handleApi(request, response, url) {
         status: 'OPEN',
         limitPrice: type === 'LIMIT' ? Number(body.limitPrice) : null,
         triggerPrice: type === 'STOP_MARKET' ? Number(body.triggerPrice) : null,
-        stopLossPrice: side === 'BUY' ? stopLossPrice : null,
+        stopLossPrice: isEntrySide(side) ? stopLossPrice : null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         cancelReason: null,
@@ -725,6 +869,11 @@ function serveStatic(request, response, pathname) {
     response.end(contents);
   });
 }
+
+// A long-running paper engine must survive a failed cycle instead of exiting the process.
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error?.message || error);
+});
 
 const server = http.createServer(async (request, response) => {
   applySecurityHeaders(response);
