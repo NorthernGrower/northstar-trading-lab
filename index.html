@@ -78,7 +78,12 @@
             <div class="metric-foot"><span class="metric-note" id="cash-value">Available cash —</span><span class="sim-tag">SIMULATED</span></div>
           </article>
           <article class="metric-card">
-            <div class="metric-label">TODAY’S P&L</div>
+            <div class="metric-label">STARTING BALANCE</div>
+            <div class="metric-value" id="initial-balance-value">—</div>
+            <div class="metric-foot"><span class="metric-note">Initial simulated capital</span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-label">TODAY’S P&amp;L</div>
             <div class="metric-value" id="daily-pnl">—</div>
             <div class="metric-foot"><span class="metric-note" id="daily-pnl-pct">UTC day · unrealized included</span></div>
           </article>
@@ -94,24 +99,44 @@
           </article>
         </div>
 
+        <section class="panel top-pick-panel" aria-labelledby="top-pick-title">
+          <div class="top-pick-heading">
+            <div class="eyebrow"><span class="live-indicator"></span>KRAKEN SCORECARD · PAPER-ELIGIBLE</div>
+            <h2 id="top-pick-title">Top coin score</h2>
+            <strong id="top-pick-market">Waiting for the first scan…</strong>
+            <p id="top-pick-note">Highest current confluence score among USD/USDT pairs. A heuristic score is not a promise of profit.</p>
+          </div>
+          <div class="top-pick-stats">
+            <div><span>SCORE</span><strong id="top-pick-score">—</strong></div>
+            <div><span>SIGNAL</span><strong id="top-pick-signal">—</strong></div>
+            <div><span>UTC-DAY CHANGE</span><strong id="top-pick-change">—</strong></div>
+            <div><span>TOP DRIVER</span><strong id="top-pick-driver">—</strong></div>
+          </div>
+          <button id="top-pick-details" class="button button-quiet" type="button" disabled>Open coin analysis</button>
+        </section>
+
         <div class="market-layout">
-          <section class="panel chart-panel" aria-label="Market price chart">
+          <section class="panel chart-panel pnl-chart-panel" aria-label="Daily paper trading profit and loss chart">
             <div class="panel-header chart-header">
-              <div><div class="panel-title">Market overview</div><div class="panel-subtitle" id="chart-subtitle">BTC / USDT · 1 minute</div></div>
+              <div><div class="panel-title">Daily paper P&amp;L</div><div class="panel-subtitle">Candles show account profit or loss through each UTC day · realized and unrealized</div></div>
+              <div class="chart-price-wrap"><strong id="daily-pnl-chart-value">—</strong><span id="daily-pnl-chart-day" class="pnl-day-label">UTC</span></div>
+            </div>
+            <div class="chart-wrap pnl-chart-wrap"><canvas id="daily-pnl-chart" aria-label="Daily paper profit and loss candlesticks" role="img"></canvas><div id="daily-pnl-chart-empty" class="chart-empty">Daily history will build as quotes and paper fills are recorded.</div></div>
+            <div class="chart-footer"><span><i class="legend-dot"></i>DAILY ACCOUNT P&amp;L · USDT</span><span id="daily-pnl-chart-updated">Waiting for account history</span></div>
+          </section>
+
+          <section class="panel order-panel" aria-labelledby="order-title">
+            <div class="panel-header order-header"><div><div class="panel-title" id="order-title">Paper order</div><div class="panel-subtitle">No exchange orders are sent</div></div><span class="order-sim-badge">SIM</span></div>
+            <div class="order-market-quote">
+              <div class="order-market-copy"><span id="chart-subtitle">BTC / USDT · Binance Spot</span><small id="last-updated">Waiting for quote</small></div>
               <div class="chart-price-wrap"><strong id="market-price">—</strong><span id="market-change" class="change-pill">—</span></div>
             </div>
-            <div class="chart-stats">
+            <div class="chart-stats order-market-stats">
               <div><span>BEST BID</span><strong id="best-bid">—</strong></div>
               <div><span>BEST ASK</span><strong id="best-ask">—</strong></div>
               <div><span>SPREAD</span><strong id="spread-value">—</strong></div>
               <div><span>24H VOLUME</span><strong id="volume-value">—</strong></div>
             </div>
-            <div class="chart-wrap"><canvas id="price-chart" aria-label="One-minute historical prices" role="img"></canvas><div id="chart-empty" class="chart-empty hidden">Historical candles unavailable</div></div>
-            <div class="chart-footer"><span><i class="legend-dot"></i>PUBLIC SPOT PRICE · 1M</span><span id="last-updated">Waiting for quote</span></div>
-          </section>
-
-          <section class="panel order-panel" aria-labelledby="order-title">
-            <div class="panel-header order-header"><div><div class="panel-title" id="order-title">Paper order</div><div class="panel-subtitle">No exchange orders are sent</div></div><span class="order-sim-badge">SIM</span></div>
             <div class="side-toggle" role="group" aria-label="Paper order action">
               <button class="side-button buy selected" data-side="BUY">Buy</button>
               <button class="side-button sell" data-side="SELL">Sell</button>
@@ -134,6 +159,11 @@
             <div class="execution-note"><span class="note-icon">i</span><span>Paper fills use public Binance bid/ask, estimated fees, slippage and top-book participation. Short is a synthetic 1× collateral simulation with a stop; no borrow, funding, liquidation or exchange orders are involved.</span></div>
           </section>
         </div>
+
+        <section class="panel positions-panel paper-positions-panel" aria-labelledby="positions-title">
+          <div class="panel-header"><div><div class="panel-title" id="positions-title">Manual paper positions <span class="count-badge" id="position-count">0</span></div><div class="panel-subtitle">Filled entries with remaining quantity · separate from the Kraken bot positions below</div></div></div>
+          <div class="table-scroll"><table><thead><tr><th>MARKET / SIDE</th><th>QUANTITY</th><th>AVG ENTRY</th><th>MARK</th><th>UNREALIZED P&amp;L</th><th>STOP</th><th>ACTION</th></tr></thead><tbody id="positions-body"><tr><td colspan="7" class="empty-row">No open manual paper positions yet</td></tr></tbody></table></div>
+        </section>
 
         <section class="panel research-panel" aria-labelledby="research-title">
           <div class="panel-header"><div><div class="panel-title" id="research-title">Market regime & research</div><div class="panel-subtitle">Descriptive indicators from recent public 1-minute candles · not an order signal</div></div><span class="research-state">RULE-BASED · NO MODEL CONNECTED</span></div>
@@ -158,15 +188,11 @@
           </div>
           <div class="kraken-bot-bottom">
             <section class="kraken-subpanel"><div class="kraken-subtitle">Open bot positions <span id="kraken-position-count">0</span></div><div class="table-scroll"><table><thead><tr><th>PAIR</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>STOP</th><th>UNREALIZED</th></tr></thead><tbody id="kraken-positions-body"><tr><td colspan="6" class="empty-row">No bot positions</td></tr></tbody></table></div></section>
-            <section class="kraken-subpanel"><div class="kraken-subtitle">Recent bot paper fills</div><div class="table-scroll"><table><thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>REALIZED P&amp;L</th></tr></thead><tbody id="kraken-trades-body"><tr><td colspan="6" class="empty-row">No bot trades yet</td></tr></tbody></table></div></section>
+            <section class="kraken-subpanel"><div class="kraken-subtitle">Recent bot paper fills</div><div class="table-scroll"><table><thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>REALIZED P&amp;L</th><th>POSITION</th></tr></thead><tbody id="kraken-trades-body"><tr><td colspan="7" class="empty-row">No bot trades yet</td></tr></tbody></table></div></section>
           </div>
         </section>
 
         <div class="lower-grid">
-          <section class="panel positions-panel">
-            <div class="panel-header"><div><div class="panel-title">Open paper positions</div><div class="panel-subtitle">Longs and synthetic 1× shorts · marked to public quotes</div></div><span class="count-badge" id="position-count">0</span></div>
-            <div class="table-scroll"><table><thead><tr><th>MARKET / SIDE</th><th>QUANTITY</th><th>AVG ENTRY</th><th>MARK</th><th>UNREALIZED P&L</th><th>STOP</th><th>ACTION</th></tr></thead><tbody id="positions-body"><tr><td colspan="7" class="empty-row">No open positions yet</td></tr></tbody></table></div>
-          </section>
           <section class="panel settings-panel">
             <div class="panel-header"><div><div class="panel-title">Simulation & risk settings</div><div id="storage-subtitle" class="panel-subtitle">Saved on this server · starting assumptions</div></div><span class="settings-icon">⚙</span></div>
             <form id="settings-form" class="settings-grid">
@@ -183,7 +209,7 @@
         </div>
 
         <section class="panel activity-panel">
-          <div class="panel-header activity-header"><div><div class="panel-title">Activity</div><div class="panel-subtitle">Persistent paper orders and fills</div></div><div class="activity-tabs"><button class="activity-tab active" data-table="trades">Trade log</button><button class="activity-tab" data-table="orders">Orders</button></div></div>
+          <div class="panel-header activity-header"><div><div class="panel-title">Manual account activity</div><div class="panel-subtitle">Filled entries show whether a position is still open or flat</div></div><div class="activity-tabs"><button class="activity-tab active" data-table="trades">Trade log</button><button class="activity-tab" data-table="orders">Orders</button></div></div>
           <div class="table-scroll"><table><thead id="activity-head"></thead><tbody id="activity-body"><tr><td class="empty-row">No paper activity yet</td></tr></tbody></table></div>
           <div id="activity-storage-note" class="activity-footnote">Trades and account state are stored on this server. No brokerage account data is read or changed.</div>
         </section>

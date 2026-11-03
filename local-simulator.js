@@ -18,6 +18,7 @@
 
   function freshState(initialBalance = 10000) {
     const balance = Number(initialBalance);
+    const today = utcDay();
     return {
       version: 1,
       initialBalance: balance,
@@ -25,11 +26,12 @@
       positions: {},
       orders: [],
       trades: [],
+      dailyPnlCandles: [{ day: today, open: 0, high: 0, low: 0, close: 0 }],
       settings: { ...DEFAULT_SETTINGS },
       manualKillSwitch: false,
       autoHaltReason: null,
       highWaterMark: balance,
-      dayKey: utcDay(),
+      dayKey: today,
       dayStartEquity: balance,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -40,7 +42,12 @@
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (stored?.version === 1 && typeof stored.cash === 'number') {
-        return { ...freshState(stored.initialBalance), ...stored, settings: { ...DEFAULT_SETTINGS, ...stored.settings } };
+        return {
+          ...freshState(stored.initialBalance),
+          ...stored,
+          settings: { ...DEFAULT_SETTINGS, ...stored.settings },
+          dailyPnlCandles: Array.isArray(stored.dailyPnlCandles) ? stored.dailyPnlCandles.slice(-90) : [],
+        };
       }
     } catch {
       // Start a fresh paper account if browser storage is unavailable or invalid.
@@ -49,15 +56,6 @@
   }
 
   let paper = loadState();
-
-  function saveState() {
-    paper.updatedAt = new Date().toISOString();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(paper));
-    } catch {
-      throw new Error('On-device storage is unavailable. Paper state could not be saved.');
-    }
-  }
 
   function positionRisk(position, feeBps = paper.settings.feeBps) {
     const feeRate = feeBps / 10000;
@@ -96,8 +94,36 @@
   function rollUtcDay() {
     const today = utcDay();
     if (paper.dayKey !== today) {
+      const previous = paper.dailyPnlCandles[paper.dailyPnlCandles.length - 1];
+      if (previous && previous.day === paper.dayKey) previous.close = equity() - paper.dayStartEquity;
       paper.dayKey = today;
       paper.dayStartEquity = equity();
+    }
+  }
+
+  function recordDailyPnl() {
+    rollUtcDay();
+    const day = paper.dayKey;
+    const pnl = equity() - paper.dayStartEquity;
+    let candle = paper.dailyPnlCandles[paper.dailyPnlCandles.length - 1];
+    if (!candle || candle.day !== day) {
+      candle = { day, open: 0, high: Math.max(0, pnl), low: Math.min(0, pnl), close: pnl };
+      paper.dailyPnlCandles.push(candle);
+    } else {
+      candle.high = Math.max(candle.high, pnl);
+      candle.low = Math.min(candle.low, pnl);
+      candle.close = pnl;
+    }
+    if (paper.dailyPnlCandles.length > 90) paper.dailyPnlCandles.splice(0, paper.dailyPnlCandles.length - 90);
+  }
+
+  function saveState() {
+    recordDailyPnl();
+    paper.updatedAt = new Date().toISOString();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(paper));
+    } catch {
+      throw new Error('On-device storage is unavailable. Paper state could not be saved.');
     }
   }
 
@@ -439,6 +465,7 @@
       positions,
       orders: paper.orders.slice(0, 40),
       trades: paper.trades.slice(0, 40),
+      dailyPnlCandles: paper.dailyPnlCandles.slice(-60),
       settings: paper.settings,
       manualKillSwitch: paper.manualKillSwitch,
       autoHaltReason: paper.autoHaltReason,

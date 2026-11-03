@@ -32,6 +32,7 @@ function utcDay() {
 
 function createInitialState(initialBalance = 10000) {
   const balance = Number(initialBalance);
+  const today = utcDay();
   return {
     version: 1,
     initialBalance: balance,
@@ -39,11 +40,12 @@ function createInitialState(initialBalance = 10000) {
     positions: {},
     orders: [],
     trades: [],
+    dailyPnlCandles: [{ day: today, open: 0, high: 0, low: 0, close: 0 }],
     settings: { ...DEFAULT_SETTINGS },
     manualKillSwitch: false,
     autoHaltReason: null,
     highWaterMark: balance,
-    dayKey: utcDay(),
+    dayKey: today,
     dayStartEquity: balance,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -57,7 +59,11 @@ function loadState() {
     if (stored.version !== 1 || typeof stored.cash !== 'number' || !stored.settings) {
       throw new Error('Invalid paper account state');
     }
-    return { ...createInitialState(stored.initialBalance), ...stored };
+    return {
+      ...createInitialState(stored.initialBalance),
+      ...stored,
+      dailyPnlCandles: Array.isArray(stored.dailyPnlCandles) ? stored.dailyPnlCandles.slice(-90) : [],
+    };
   } catch (error) {
     if (error.code !== 'ENOENT') {
       console.error('Paper account state could not be loaded; starting a fresh account:', error.message);
@@ -68,7 +74,24 @@ function loadState() {
   }
 }
 
+function recordDailyPnl(state) {
+  rollUtcDay(state);
+  const day = state.dayKey;
+  const pnl = accountEquity(state) - state.dayStartEquity;
+  let candle = state.dailyPnlCandles[state.dailyPnlCandles.length - 1];
+  if (!candle || candle.day !== day) {
+    candle = { day, open: 0, high: Math.max(0, pnl), low: Math.min(0, pnl), close: pnl };
+    state.dailyPnlCandles.push(candle);
+  } else {
+    candle.high = Math.max(candle.high, pnl);
+    candle.low = Math.min(candle.low, pnl);
+    candle.close = pnl;
+  }
+  if (state.dailyPnlCandles.length > 90) state.dailyPnlCandles.splice(0, state.dailyPnlCandles.length - 90);
+}
+
 function saveState(state) {
+  recordDailyPnl(state);
   state.updatedAt = new Date().toISOString();
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const temporaryFile = `${STATE_FILE}.tmp`;
@@ -227,6 +250,8 @@ function metrics(state) {
 function rollUtcDay(state) {
   const today = utcDay();
   if (state.dayKey !== today) {
+    const previous = state.dailyPnlCandles[state.dailyPnlCandles.length - 1];
+    if (previous && previous.day === state.dayKey) previous.close = accountEquity(state) - state.dayStartEquity;
     state.dayKey = today;
     state.dayStartEquity = accountEquity(state);
   }
@@ -529,6 +554,7 @@ function stateSnapshot(state) {
     positions,
     orders: state.orders.slice(0, 40),
     trades: state.trades.slice(0, 40),
+    dailyPnlCandles: state.dailyPnlCandles.slice(-60),
     settings: state.settings,
     manualKillSwitch: state.manualKillSwitch,
     autoHaltReason: state.autoHaltReason,

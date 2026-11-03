@@ -128,15 +128,20 @@
     if (!account) return;
     const metrics = account.metrics;
     $('#equity-value').textContent = money(metrics.equity);
+    $('#initial-balance-value').textContent = money(account.initialBalance);
     $('#cash-value').textContent = `Available cash ${money(metrics.cash)}`;
     $('#daily-pnl').textContent = money(metrics.dailyPnl, true);
     $('#daily-pnl-pct').textContent = `${metrics.dailyPnlPct >= 0 ? '+' : ''}${metrics.dailyPnlPct.toFixed(2)}% · UTC day, unrealized included`;
+    $('#daily-pnl-chart-value').textContent = money(metrics.dailyPnl, true);
+    $('#daily-pnl-chart-day').textContent = new Date().toISOString().slice(0, 10);
+    $('#daily-pnl-chart-updated').textContent = account.lastUpdatedAt ? `Updated ${formatTime(account.lastUpdatedAt)}` : 'Waiting for account history';
     $('#open-risk').textContent = money(metrics.totalOpenRisk);
     $('#risk-cap').textContent = `Limit ${account.settings.maxRiskPct}% per position`;
     $('#drawdown-value').textContent = `${metrics.drawdownPct.toFixed(2)}%`;
     $('#drawdown-cap').textContent = `Limit ${account.settings.maxDrawdownPct}% · peak ${money(metrics.highWaterMark)}`;
     applySignedStyle($('#daily-pnl'), metrics.dailyPnl);
     applySignedStyle($('#daily-pnl-pct'), metrics.dailyPnl);
+    applySignedStyle($('#daily-pnl-chart-value'), metrics.dailyPnl);
     $('#kill-switch').textContent = account.manualKillSwitch ? 'Disable kill switch' : 'Enable kill switch';
     $('#kill-switch').classList.toggle('button-danger', account.manualKillSwitch);
     $('#kill-switch').classList.toggle('button-quiet', !account.manualKillSwitch);
@@ -157,6 +162,41 @@
     renderActivity();
     fillSettings(account.settings);
     updateOrderForm();
+    drawPnlChart();
+  }
+
+  function renderTopPick(snapshot) {
+    const eligible = (snapshot.markets || []).filter((marketItem) =>
+      marketItem.eligible && ['USD', 'USDT'].includes(marketItem.quote) && Number.isFinite(Number(marketItem.tradeScore)));
+    eligible.sort((left, right) => Number(right.tradeScore) - Number(left.tradeScore));
+    const pick = eligible[0];
+    const button = $('#top-pick-details');
+    button.disabled = !pick;
+    button.dataset.pairKey = pick?.pairKey || '';
+    if (!pick) {
+      $('#top-pick-market').textContent = snapshot.scanning ? 'Scanning eligible pairs…' : 'No eligible score yet';
+      $('#top-pick-score').textContent = '—';
+      $('#top-pick-signal').textContent = '—';
+      $('#top-pick-change').textContent = '—';
+      $('#top-pick-driver').textContent = '—';
+      $('#top-pick-signal').classList.remove('positive', 'negative');
+      $('#top-pick-change').classList.remove('positive', 'negative');
+      return;
+    }
+    const analysis = snapshot.latestAnalysis?.[pick.pairKey];
+    const signal = analysis?.signal || 'WAITING';
+    const strongestVote = [...(analysis?.votes || [])]
+      .sort((left, right) => Math.abs(right.vote * right.weight) - Math.abs(left.vote * left.weight))[0];
+    const driver = analysis?.candlePatterns?.[0]?.name || strongestVote?.label || '—';
+    $('#top-pick-market').textContent = `${pick.display} · ${pick.tradeScore}/100`;
+    $('#top-pick-score').textContent = `${pick.tradeScore}/100`;
+    $('#top-pick-signal').textContent = signal;
+    $('#top-pick-change').textContent = `${pick.todayChangePct >= 0 ? '+' : ''}${Number(pick.todayChangePct || 0).toFixed(2)}%`;
+    $('#top-pick-driver').textContent = driver;
+    $('#top-pick-signal').classList.toggle('positive', signal === 'ENTRY READY');
+    $('#top-pick-signal').classList.toggle('negative', signal === 'EXIT SIGNAL' || signal === 'BLOCKED');
+    $('#top-pick-change').classList.toggle('positive', pick.todayChangePct >= 0);
+    $('#top-pick-change').classList.toggle('negative', pick.todayChangePct < 0);
   }
 
   function renderPositions(positions) {
@@ -168,7 +208,7 @@
       const cell = document.createElement('td');
       cell.colSpan = 7;
       cell.className = 'empty-row';
-      cell.textContent = 'No open positions yet';
+      cell.textContent = 'No open manual paper positions yet';
       row.append(cell);
       tbody.append(row);
       return;
@@ -203,7 +243,7 @@
     body.replaceChildren();
     const headerRow = document.createElement('tr');
     const headers = activeTable === 'trades'
-      ? ['TIME', 'MARKET', 'SIDE', 'TYPE', 'QUANTITY', 'FILL PRICE', 'FEE', 'REALIZED P&L']
+      ? ['TIME', 'MARKET', 'SIDE', 'TYPE', 'QUANTITY', 'FILL PRICE', 'FEE', 'REALIZED P&L', 'POSITION']
       : ['TIME', 'MARKET', 'SIDE', 'TYPE', 'QUANTITY', 'FILLED', 'STATUS', 'DETAILS'];
     headers.forEach((label) => appendCell(headerRow, label));
     head.append(headerRow);
@@ -229,6 +269,8 @@
         appendCell(row, money(entry.price));
         appendCell(row, money(entry.fee));
         appendCell(row, money(entry.realizedPnl, true), entry.realizedPnl > 0 ? 'positive' : entry.realizedPnl < 0 ? 'negative' : '');
+        const position = account.positions.find((item) => item.symbol === entry.symbol);
+        appendCell(row, position ? `OPEN · ${position.direction}` : 'FLAT', position ? 'positive' : 'muted-cell');
       } else {
         appendCell(row, quantityFormat(entry.filledQty));
         appendCell(row, entry.status, entry.status === 'FILLED' ? 'positive' : entry.status === 'CANCELLED' ? 'negative' : '');
@@ -297,7 +339,7 @@
 
   function renderMarket() {
     if (!market) return;
-    $('#chart-subtitle').textContent = `${symbol.slice(0, -4)} / USDT · 1 minute`;
+    $('#chart-subtitle').textContent = `${symbol.slice(0, -4)} / USDT · Binance Spot`;
     $('#market-price').textContent = money(market.price);
     const change = $('#market-change');
     change.textContent = `${market.changePct >= 0 ? '+' : ''}${market.changePct.toFixed(2)}%`;
@@ -316,7 +358,7 @@
     $('#header-data-dot').classList.add('online');
     updateOrderForm();
     renderResearch();
-    drawChart();
+    drawPnlChart();
   }
 
   function renderMarketOffline(message) {
@@ -374,9 +416,9 @@
     submit.disabled = !account || !sideAllowed || (isEntry && !marketAvailable) || qty <= 0 || entriesBlocked;
   }
 
-  function drawChart() {
-    const canvas = $('#price-chart');
-    const empty = $('#chart-empty');
+  function drawPnlChart() {
+    const canvas = $('#daily-pnl-chart');
+    const empty = $('#daily-pnl-chart-empty');
     const rect = canvas.getBoundingClientRect();
     const width = rect.width;
     const height = rect.height;
@@ -385,61 +427,68 @@
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
     const context = canvas.getContext('2d');
-    context.scale(ratio, ratio);
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
-    if (candles.length < 2) {
+    const history = Array.isArray(account?.dailyPnlCandles) ? account.dailyPnlCandles.slice(-45) : [];
+    if (!history.length) {
       empty.classList.remove('hidden');
       return;
     }
     empty.classList.add('hidden');
-    const padding = { top: 14, right: 10, bottom: 12, left: 10 };
+    const padding = { top: 12, right: 10, bottom: 21, left: 43 };
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
-    const values = candles.flatMap((candle) => [candle.high, candle.low]);
-    let min = Math.min(...values);
-    let max = Math.max(...values);
-    if (max === min) { max += 1; min -= 1; }
-    const gap = (max - min) * 0.1;
+    const values = history.flatMap((candle) => [candle.open, candle.high, candle.low, candle.close]).filter(Number.isFinite);
+    let min = Math.min(0, ...values);
+    let max = Math.max(0, ...values);
+    if (max - min < 1) { min -= 0.5; max += 0.5; }
+    const gap = (max - min) * 0.08;
     min -= gap;
     max += gap;
     const y = (value) => padding.top + (max - value) / (max - min) * chartH;
-    context.strokeStyle = 'rgba(255,255,255,0.055)';
-    context.lineWidth = 1;
-    for (let i = 0; i < 4; i += 1) {
-      const lineY = padding.top + chartH * i / 3;
+    context.font = '8px -apple-system, BlinkMacSystemFont, sans-serif';
+    context.textAlign = 'right';
+    context.textBaseline = 'middle';
+    for (let line = 0; line <= 3; line += 1) {
+      const value = max - (max - min) * line / 3;
+      const lineY = y(value);
       context.beginPath();
+      context.strokeStyle = Math.abs(value) < 1e-9 ? 'rgba(129,191,255,.38)' : 'rgba(255,255,255,.055)';
+      context.setLineDash(Math.abs(value) < 1e-9 ? [3, 3] : []);
       context.moveTo(padding.left, lineY);
       context.lineTo(width - padding.right, lineY);
       context.stroke();
+      context.fillStyle = '#748596';
+      const label = `${value > 0 ? '+' : value < 0 ? '−' : ''}${amountFormat.format(Math.abs(value))}`;
+      context.fillText(label, padding.left - 5, lineY);
     }
-    const slot = chartW / candles.length;
-    const bodyWidth = Math.max(1, Math.min(5, slot * 0.58));
-    candles.forEach((candle, index) => {
+    context.setLineDash([]);
+    const slot = chartW / history.length;
+    const bodyWidth = Math.max(3, Math.min(12, slot * 0.55));
+    history.forEach((candle, index) => {
+      const high = Math.max(candle.high, candle.open, candle.close);
+      const low = Math.min(candle.low, candle.open, candle.close);
       const x = padding.left + slot * (index + 0.5);
-      const up = candle.close >= candle.open;
-      const color = up ? '#64d5a3' : '#ed7786';
+      const color = candle.close >= candle.open ? '#64d5a3' : '#ed7786';
       context.strokeStyle = color;
       context.fillStyle = color;
-      context.lineWidth = 1;
+      context.lineWidth = 1.2;
       context.beginPath();
-      context.moveTo(x, y(candle.high));
-      context.lineTo(x, y(candle.low));
+      context.moveTo(x, y(high));
+      context.lineTo(x, y(low));
       context.stroke();
       const openY = y(candle.open);
       const closeY = y(candle.close);
-      const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+      const bodyHeight = Math.max(2, Math.abs(closeY - openY));
       context.fillRect(x - bodyWidth / 2, Math.min(openY, closeY), bodyWidth, bodyHeight);
+      const labelStep = Math.max(1, Math.ceil(history.length / 6));
+      if (index % labelStep === 0 || index === history.length - 1) {
+        context.fillStyle = '#748596';
+        context.textAlign = 'center';
+        context.textBaseline = 'top';
+        context.fillText(String(candle.day || '').slice(5), x, height - padding.bottom + 6);
+      }
     });
-    if (market?.price) {
-      const priceY = y(market.price);
-      context.strokeStyle = 'rgba(104, 187, 255, 0.65)';
-      context.setLineDash([3, 4]);
-      context.beginPath();
-      context.moveTo(padding.left, priceY);
-      context.lineTo(width - padding.right, priceY);
-      context.stroke();
-      context.setLineDash([]);
-    }
   }
 
   async function refreshMarket(forceHistory = false) {
@@ -470,13 +519,13 @@
             candles = result.candles;
             lastHistoryAt = now;
             renderResearch();
-            drawChart();
+            drawPnlChart();
           }
         } catch {
           if (symbol === requestedSymbol) {
             candles = [];
             renderResearch();
-            drawChart();
+            drawPnlChart();
           }
         }
       }
@@ -502,13 +551,17 @@
     $('#breadcrumb-mode').textContent = VIEW_LABELS[target];
     window.history.replaceState(null, '', `#${target}`);
     if (target === 'live') api('/api/live').catch(() => {});
-    if (target === 'paper') window.setTimeout(drawChart, 30);
+    if (target === 'paper') window.setTimeout(drawPnlChart, 30);
   }
 
   // The Coins page opens the same analysis panel, so it can ask for a view change.
   window.NorthstarSwitchMode = switchMode;
 
   document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => switchMode(button.dataset.mode)));
+  $('#top-pick-details').addEventListener('click', (event) => {
+    const pairKey = event.currentTarget.dataset.pairKey;
+    if (pairKey) window.NorthstarOpenCoinPage?.(pairKey);
+  });
   document.querySelectorAll('.side-button').forEach((button) => button.addEventListener('click', () => {
     const nextSide = button.dataset.side;
     if ((nextSide === 'BUY' || nextSide === 'SHORT') && nextSide !== side) $('#stop-price-input').value = '';
@@ -529,7 +582,7 @@
     lastHistoryAt = 0;
     $('#quantity-input').value = '';
     $('#stop-price-input').value = '';
-    $('#chart-subtitle').textContent = `${symbol.slice(0, -4)} / USDT · 1 minute`;
+    $('#chart-subtitle').textContent = `${symbol.slice(0, -4)} / USDT · Binance Spot`;
     await refreshMarket(true);
   });
   $('#order-type').addEventListener('change', updateOrderForm);
@@ -542,10 +595,11 @@
       renderAccount();
       const order = result.order;
       const asset = payload.symbol.slice(0, -4);
+      const openPosition = result.account.positions.find((position) => position.symbol === payload.symbol);
       const message = order.status === 'FILLED'
-        ? payload.side === 'SHORT' ? `Simulated short opened: ${quantityFormat(order.filledQty)} ${asset}.`
-          : payload.side === 'COVER' ? `Simulated short covered: ${quantityFormat(order.filledQty)} ${asset}.`
-            : `Paper order filled ${quantityFormat(order.filledQty)} ${asset}.`
+        ? ['BUY', 'SHORT'].includes(payload.side)
+          ? `${payload.side === 'SHORT' ? 'Simulated short' : 'Paper entry'} filled ${quantityFormat(order.filledQty)} ${asset}. ${openPosition ? `${quantityFormat(openPosition.qty)} remains open.` : 'No position remains open.'}`
+          : `${payload.side === 'COVER' ? 'Short cover' : 'Paper exit'} filled ${quantityFormat(order.filledQty)} ${asset}. ${openPosition ? `${quantityFormat(openPosition.qty)} remains open.` : 'Position is now flat.'}`
         : order.status === 'PARTIALLY_FILLED'
           ? `Paper order partially filled ${quantityFormat(order.filledQty)}; remaining quantity is open or cancelled.`
           : 'Paper order accepted and waiting for its price condition.';
@@ -620,7 +674,8 @@
     }
   });
 
-  window.addEventListener('resize', drawChart);
+  window.addEventListener('resize', drawPnlChart);
+  window.NorthstarKrakenBot.subscribe(renderTopPick);
   const initialHash = window.location.hash.replace('#', '');
   const initialMode = Object.prototype.hasOwnProperty.call(VIEWS, initialHash) ? initialHash : 'paper';
   switchMode(initialMode);

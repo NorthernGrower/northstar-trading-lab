@@ -569,13 +569,14 @@
     }
   }
 
-  function renderTrades(trades) {
+  function renderTrades(trades, positions) {
     const body = $('#kraken-trades-body');
+    const openPairs = new Set(positions.map((position) => position.pairKey));
     body.replaceChildren();
     if (!trades.length) {
       const row = document.createElement('tr');
       const item = document.createElement('td');
-      item.colSpan = 6;
+      item.colSpan = 7;
       item.className = 'empty-row';
       item.textContent = 'No bot trades yet';
       row.append(item);
@@ -591,6 +592,8 @@
       cell(row, number(trade.qty, 8));
       cell(row, `${number(trade.price, 6)} ${trade.display.split('/')[1] || ''}`);
       cell(row, dollars(trade.realizedPnl, true), signedClass(trade.realizedPnl));
+      const stillOpen = openPairs.has(trade.pairKey);
+      cell(row, stillOpen ? 'OPEN' : 'FLAT', stillOpen ? 'positive' : 'muted-cell');
       body.append(row);
     }
   }
@@ -666,7 +669,7 @@
     renderCoinDetail(snapshot);
     renderSharedSignals(snapshot);
     renderPositions(snapshot.positions);
-    renderTrades(snapshot.trades);
+    renderTrades(snapshot.trades, snapshot.positions);
     renderFreshness(snapshot);
   }
 
@@ -756,6 +759,8 @@
     openCoinPage(pairKey);
     loadSelectedPairDetail();
   }
+
+  window.NorthstarOpenCoinPage = selectPair;
 
   $('#kraken-market-filter').addEventListener('input', (event) => {
     marketFilter = event.target.value.trim().toLowerCase();
