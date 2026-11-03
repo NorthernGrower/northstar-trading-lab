@@ -614,6 +614,20 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, stateSnapshot(paper));
   }
 
+  if (request.method === 'GET' && url.pathname === '/api/symbols') {
+    try {
+      const tickers = await fetchJson(`${MARKET_API}/api/v3/ticker/price`);
+      const symbols = (Array.isArray(tickers) ? tickers : [])
+        .filter((item) => validSymbol(item.symbol) && Number(item.price) > 0)
+        .map((item) => ({ symbol: item.symbol, baseAsset: item.symbol.slice(0, -4), quoteAsset: 'USDT' }))
+        .sort((left, right) => left.baseAsset.localeCompare(right.baseAsset));
+      if (!symbols.length) throw new Error('No active Binance Spot USDT pairs are available.');
+      return sendJson(response, 200, { symbols });
+    } catch (error) {
+      return sendJson(response, 502, { error: error.message || 'Binance market list is unavailable.' });
+    }
+  }
+
   if (request.method === 'GET' && url.pathname === '/api/market') {
     const symbol = (url.searchParams.get('symbol') || 'BTCUSDT').toUpperCase();
     try {

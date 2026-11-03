@@ -608,3 +608,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .order-market-quote .order-market-copy { display: grid; align-items: start; justify-content: initial; gap: 4px; }
 .pnl-day-label { padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; color: #8291a1; background: rgba(255,255,255,.025); font-size: 8px; }
 .settings-panel { margin-top: 0; }
+
+
+#market-search { width: 165px; height: 35px; padding: 0 9px; border-radius: 7px; font-size: 10px; }
+@media (max-width: 560px) {
+  #market-search, #symbol-select { width: 100%; flex: 1 1 100%; }
+}

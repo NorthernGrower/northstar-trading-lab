@@ -2,6 +2,12 @@
   const $ = (selector) => document.querySelector(selector);
   const amountFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
   const compactNumber = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 });
+  const FALLBACK_MARKETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'].map((symbol) => ({
+    symbol,
+    baseAsset: symbol.slice(0, -4),
+    quoteAsset: 'USDT',
+  }));
+  let marketSymbols = FALLBACK_MARKETS;
   let symbol = 'BTCUSDT';
   let side = 'BUY';
   let activeTable = 'trades';
@@ -58,6 +64,39 @@
       setRuntimeMode(false);
     }
     return payload;
+  }
+
+  function renderMarketOptions() {
+    const query = $('#market-search').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const matches = marketSymbols.filter((item) => !query
+      || item.symbol.includes(query)
+      || String(item.baseAsset || '').toUpperCase().includes(query));
+    const select = $('#symbol-select');
+    select.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.textContent = matches.length ? `Select a pair (${matches.length})` : 'No matching pairs';
+    select.append(placeholder);
+    for (const item of matches) {
+      const option = document.createElement('option');
+      option.value = item.symbol;
+      option.textContent = `${item.baseAsset || item.symbol.slice(0, -4)} / ${item.quoteAsset || 'USDT'}`;
+      select.append(option);
+    }
+    select.value = matches.some((item) => item.symbol === symbol) ? symbol : '';
+  }
+
+  async function loadMarketSymbols() {
+    try {
+      const result = await api('/api/symbols');
+      const symbols = (result.symbols || []).filter((item) => item && typeof item.symbol === 'string');
+      if (symbols.length) marketSymbols = symbols;
+    } catch {
+      marketSymbols = FALLBACK_MARKETS;
+    }
+    if (!marketSymbols.some((item) => item.symbol === symbol)) symbol = 'BTCUSDT';
+    renderMarketOptions();
   }
 
   function showToast(message, error = false) {
@@ -575,8 +614,12 @@
     renderActivity();
   }));
 
+  $('#market-search').addEventListener('input', renderMarketOptions);
   $('#symbol-select').addEventListener('change', async (event) => {
+    if (!event.target.value) return;
     symbol = event.target.value;
+    $('#market-search').value = '';
+    renderMarketOptions();
     market = null;
     candles = [];
     lastHistoryAt = 0;
@@ -679,7 +722,11 @@
   const initialHash = window.location.hash.replace('#', '');
   const initialMode = Object.prototype.hasOwnProperty.call(VIEWS, initialHash) ? initialHash : 'paper';
   switchMode(initialMode);
-  refreshMarket(true);
+  renderMarketOptions();
+  api('/api/health').catch(() => {}).then(() => {
+    loadMarketSymbols();
+    refreshMarket(true);
+  });
   refreshTimer = window.setInterval(() => refreshMarket(false), 4000);
   window.addEventListener('pagehide', () => window.clearInterval(refreshTimer));
 })();

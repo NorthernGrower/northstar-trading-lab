@@ -416,6 +416,16 @@
     return market;
   }
 
+  async function fetchSymbols() {
+    const tickers = await fetchJson(`${MARKET_API}/api/v3/ticker/price`);
+    const symbols = (Array.isArray(tickers) ? tickers : [])
+      .filter((item) => validSymbol(item.symbol) && Number(item.price) > 0)
+      .map((item) => ({ symbol: item.symbol, baseAsset: item.symbol.slice(0, -4), quoteAsset: 'USDT' }))
+      .sort((left, right) => left.baseAsset.localeCompare(right.baseAsset));
+    if (!symbols.length) throw new Error('No active Binance Spot USDT pairs are available.');
+    return { symbols };
+  }
+
   async function tick(symbol) {
     const orderSymbols = paper.orders.filter(activeOrder).map((order) => order.symbol);
     const symbols = [...new Set([symbol, ...Object.keys(paper.positions), ...orderSymbols])];
@@ -494,6 +504,7 @@
       return { mode: 'LIVE', status: 'LOCKED', tradingEnabled: false, accountConnected: false, ordersEnabled: false, message: 'Live trading is not configured. No live credentials or order routes are installed.' };
     }
     if (method === 'GET' && parsed.pathname === '/api/paper') return snapshot();
+    if (method === 'GET' && parsed.pathname === '/api/symbols') return fetchSymbols();
 
     if (method === 'GET' && parsed.pathname === '/api/market') {
       const symbol = (parsed.searchParams.get('symbol') || 'BTCUSDT').toUpperCase();
